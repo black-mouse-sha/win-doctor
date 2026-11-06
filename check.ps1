@@ -8,7 +8,38 @@
     powershell -NoProfile -ExecutionPolicy Bypass -File .\check.ps1
 #>
 
+param(
+    [switch]$SpeedTest
+)
+
 $ErrorActionPreference = 'SilentlyContinue'
+
+# ── 盘速测试：只在 -SpeedTest 时执行，会临时写文件 ──
+function Test-DiskSpeed {
+    param([string]$Drive)
+    # C 盘根目录普通用户写不了，用 TEMP
+    if ($Drive -eq 'C') {
+        $test = Join-Path $env:TEMP '_pf_speed_test.bin'
+    } else {
+        $test = "${Drive}:\_pf_speed_test.bin"
+    }
+    try {
+        $buf = New-Object byte[] (8 * 1024 * 1024)
+        [Array]::Clear($buf, 0, $buf.Length)
+        $fs = [System.IO.File]::Create($test)
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        for ($i = 0; $i -lt 128; $i++) { $fs.Write($buf, 0, $buf.Length) }
+        $fs.Flush($true)
+        $sw.Stop()
+        $fs.Close()
+        $mb = (Get-Item $test).Length / 1MB
+        Remove-Item $test -Force
+        return [math]::Round($mb / $sw.Elapsed.TotalSeconds, 0)
+    } catch {
+        if (Test-Path $test) { Remove-Item $test -Force -ErrorAction SilentlyContinue }
+        return -1
+    }
+}
 
 function Line { param($c = 'Gray') Write-Host ('─' * 62) -ForegroundColor $c }
 function Head { param($t) Write-Host ''; Write-Host "  $t" -ForegroundColor Cyan; Line 'DarkGray' }
@@ -183,15 +214,36 @@ foreach ($d in (Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3')) {
 }
 
 Write-Host ''
-Write-Host '  盘符对应哪块物理盘（页面文件要放独立盘）：' -ForegroundColor Gray
+Write-Host '  盘符对应哪块物理盘（页面文件要放快的那块）：' -ForegroundColor Gray
+$diskSpeed = @{}
 foreach ($dl in (Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3').DeviceID) {
     $letter = $dl.TrimEnd(':')
     $p = Get-Partition -DriveLetter $letter
     if ($p) {
         $dk = Get-Disk -Number $p.DiskNumber
         $pd = Get-PhysicalDisk | Where-Object { $_.DeviceId -eq $dk.Number }
-        Write-Host ("    {0}:  Disk{1}  {2}  {3}" -f $letter, $dk.Number, $dk.FriendlyName, $pd.MediaType) -ForegroundColor Gray
+        if ($SpeedTest) {
+            $s = Test-DiskSpeed $letter
+            $diskSpeed[$letter] = $s
+            if ($s -lt 0) {
+                Write-Host ("    {0}:  Disk{1}  {2}  {3}   测速失败" -f $letter, $dk.Number, $dk.FriendlyName, $pd.MediaType) -ForegroundColor Red
+            } elseif ($s -lt 150) {
+                Write-Host ("    {0}:  Disk{1}  {2}  {3}   {4} MB/s  ← 太慢！不能放页面文件" -f $letter, $dk.Number, $dk.FriendlyName, $pd.MediaType, $s) -ForegroundColor Red
+            } elseif ($s -lt 500) {
+                Write-Host ("    {0}:  Disk{1}  {2}  {3}   {4} MB/s  ← 偏慢" -f $letter, $dk.Number, $dk.FriendlyName, $pd.MediaType, $s) -ForegroundColor Yellow
+            } else {
+                Write-Host ("    {0}:  Disk{1}  {2}  {3}   {4} MB/s" -f $letter, $dk.Number, $dk.FriendlyName, $pd.MediaType, $s) -ForegroundColor Green
+            }
+        } else {
+            Write-Host ("    {0}:  Disk{1}  {2}  {3}" -f $letter, $dk.Number, $dk.FriendlyName, $pd.MediaType) -ForegroundColor Gray
+        }
     }
+}
+if (-not $SpeedTest) {
+    Write-Host ''
+    Write-Host '  提示：加 -SpeedTest 参数测每块盘的写入速度。' -ForegroundColor DarkGray
+    Write-Host '        页面文件必须放在 > 150 MB/s 的盘上。' -ForegroundColor DarkGray
+    Write-Host '        白牌 SSD 掉速后会静默创建失败，重启多少次都不生效。' -ForegroundColor DarkGray
 }
 
 # ─────────────────────────────────────────────
@@ -221,14 +273,73 @@ Get-Process | Group-Object ProcessName | ForEach-Object {
 }
 
 # ─────────────────────────────────────────────
+# 分诊：根据前面测到的数字，给出唯一建议
 Write-Host ''
 Write-Host ('═' * 62) -ForegroundColor Cyan
+Write-Host '  📋 分诊结论' -ForegroundColor Cyan
+Write-Host ('─' * 62) -ForegroundColor DarkGray
+
+$advice = 0
+$commitGB = $os.TotalVirtualMemorySize / 1MB
+$physGB   = $os.TotalVisibleMemorySize / 1MB
+$gapGB    = $commitGB - $physGB
+
+# ① 页面文件
+if ($gapGB -lt ($physGB * 0.5)) {
+    $advice++
+    Write-Host "  [$advice] 🔴 页面文件严重不足（缓冲只有 $([math]::Round($gapGB,1)) GB）" -ForegroundColor Red
+    Write-Host "      这是你「程序自己消失」的直接原因。" -ForegroundColor Yellow
+    Write-Host "      → modules/03-页面文件.md" -ForegroundColor Green
+    if ($SpeedTest -and $diskSpeed.Count -gt 0) {
+        $fastest = $diskSpeed.GetEnumerator() | Where-Object { $_.Value -gt 150 } | Sort-Object Value -Descending | Select-Object -First 1
+        if ($fastest) {
+            Write-Host "      建议放在 $($fastest.Key): 盘（测速 $($fastest.Value) MB/s）" -ForegroundColor Green
+        } else {
+            Write-Host "      ⚠ 没有一块盘超过 150 MB/s，只能放 C 盘" -ForegroundColor Red
+        }
+    }
+}
+
+# ② 慢盘警告
+if ($SpeedTest) {
+    $slow = $diskSpeed.GetEnumerator() | Where-Object { $_.Value -ge 0 -and $_.Value -lt 150 }
+    foreach ($s in $slow) {
+        $advice++
+        Write-Host "  [$advice] 🟠 $($s.Key): 盘只有 $($s.Value) MB/s，异常慢" -ForegroundColor Red
+        Write-Host "      白牌 SSD 掉速或机械盘。别放页面文件，别放重要数据。" -ForegroundColor Yellow
+    }
+}
+
+# ③ 开机自启
+if ($totalAuto -gt 20) {
+    $advice++
+    Write-Host "  [$advice] 🟡 开机自启 $totalAuto 项，偏多" -ForegroundColor Yellow
+    Write-Host "      → modules/01-开机自启.md" -ForegroundColor Green
+}
+
+# ④ 第三方服务
+if ($thirdParty.Count -gt 15) {
+    $advice++
+    Write-Host "  [$advice] 🟡 第三方自启服务 $($thirdParty.Count) 个，可以挑几个改手动" -ForegroundColor Yellow
+    Write-Host "      → modules/02-系统服务.md" -ForegroundColor Green
+}
+
+# ⑤ 内存总量
+if ($physGB -lt 18 -and $freeGB -lt 3) {
+    $advice++
+    Write-Host "  [$advice] 🟡 物理内存只有 $([math]::Round($physGB,0)) GB，可用 $freeGB GB" -ForegroundColor Yellow
+    Write-Host "      页面文件能救急，但根治要加内存条。" -ForegroundColor Gray
+}
+
+if ($advice -eq 0) {
+    Write-Host '  ✅ 没发现明显问题，这台机器状态不错。' -ForegroundColor Green
+}
+
+Write-Host ''
 Write-Host '  体检完成。以上全是只读操作，你的电脑没有任何改动。' -ForegroundColor Green
 Write-Host ''
 Write-Host '  下一步：' -ForegroundColor Cyan
-Write-Host '    · 页面文件有问题  → modules/03-页面文件.md' -ForegroundColor Gray
-Write-Host '    · 开机自启太多    → modules/01-开机自启.md' -ForegroundColor Gray
-Write-Host '    · 服务太多空转    → modules/02-系统服务.md' -ForegroundColor Gray
-Write-Host '    · 或者把结果贴给 AI，让它帮你看' -ForegroundColor Gray
+Write-Host '    · 把这份输出整段贴给 AI，说「按 AGENT-GUIDE.md 帮我看看」' -ForegroundColor Gray
+Write-Host '    · 或者自己翻 modules/ 对应章节' -ForegroundColor Gray
 Write-Host ('═' * 62) -ForegroundColor Cyan
 Write-Host ''

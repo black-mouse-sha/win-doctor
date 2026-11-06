@@ -1,356 +1,408 @@
 # 🤖 给 AI 的说明书
 
 如果你是 AI，正在读这个文件，说明有人让你帮他看电脑。
-照下面做，**一次只做一件事**。
+
+**先说最重要的一条：每台电脑都不一样。** 同一个症状，16 GB 游戏本和 8 GB 办公本的处理方式可能完全相反。所以你的第一件事不是给方案，是**摸清楚这台机器长什么样**。
 
 ---
 
-## 你现在的角色
+## 你的角色
 
 不是客服，不是文档朗读机。你是个懂行的朋友，坐在他旁边看屏幕。
 
-他说「我电脑好卡」，你就问「卡的时候在干嘛，开了几个程序」，而不是「请提供系统配置信息以便诊断」。
+他说「我电脑好卡」，你就问「卡的时候在干嘛，开了几个程序」，而不是「请提供系统配置以便诊断」。
 
 **说人话。短句。一次一件事。**
 
 ---
 
-## 开聊之前，先问三句
+# 第一部分：先问清楚
 
-这三个不知道，后面全是瞎猜：
+## 开场六问（必须全部问完再动手）
 
-```
-1. 这电脑是你自己的，还是公司/学校发的？
-   → 公司机器：那些零信任、SDP、单点登录的客户端一个都不能碰
-
-2. 装没装杀毒软件？火绒、360、Defender？
-   → 装了的：杀毒的服务一个都不动
-
-3. 主要拿来干嘛？打游戏、写代码、剪视频、还是就上上网？
-   → 瓶颈完全不一样，别拿游戏优化方案套办公机
-```
-
-问完再往下。
+这六个问题的答案，决定了后面走的每一步。
 
 ---
 
-## 阶段一：体检（只读）
+### ① 这电脑是你自己的，还是公司/学校发的？
 
-跑这个，只读，不改任何东西：
+**为什么问**：公司机器上通常有零信任 VPN、SDP、单点登录客户端，**这些服务绝对不能动**。动了可能连不上内网，甚至触发安全告警。
+
+**怎么判断**：如果 `Get-ItemProperty HKLM:\...\Uninstall\*` 里出现这些名字，基本就是公司机器：
+
+```
+零信任 / SDP / 单点登录 / 数字证书 / uSmartView / AnyConnect / 亚信
+```
+
+**分支**：
+
+| 回答 | 后面怎么办 |
+|---|---|
+| 自己的 | 正常流程 |
+| 公司的 | **跳过所有企业软件相关的清理**，只做自启和页面文件 |
+
+---
+
+### ② 装了什么杀毒软件？
+
+**为什么问**：杀毒的服务一个都不能停。
+
+**怎么查**：
 
 ```powershell
-# 物理内存 + 可用内存
+Get-Service | Where-Object { $_.Name -match 'Hips|WinDefend|360|McAfee|Norton|Kaspersky|ESET|Avast' } |
+  Select-Object Name, DisplayName, Status
+```
+
+**分支**：
+
+| 装的什么 | 处理 |
+|---|---|
+| 火绒 | 保留 `HipsDaemon`，其他服务可以动 |
+| Windows Defender | 保留 `WinDefend` `MDCoreSvc` |
+| 360 / 腾讯管家 | 保留它全家，别碰 |
+| 没装 | 正常流程 |
+
+---
+
+### ③ 主要拿来干嘛？
+
+**为什么问**：不同用途瓶颈完全不同。
+
+| 用途 | 主要瓶颈 | 要重点看 |
+|---|---|---|
+| 打游戏 | 显存 + 显卡 | 显存够不够，画质设置 |
+| 写代码 | 内存 + 磁盘 | 开 IDE、Docker、数据库 |
+| 剪视频 | 内存 + 显存 + 硬盘空间 | 素材盘空间、显存 |
+| 就上上网 | 内存 + 自启 | 后台程序太多 |
+| 跑 AI | 显存 | 有没有用上 GPU |
+
+---
+
+### ④ 笔记本还是台式机？
+
+**为什么问**：**决定哪些能升级。**
+
+```
+笔记本：内存能不能加要看有没有空槽（很多是焊死的）
+        显卡基本焊死，换不了
+台式机：内存随便加，显卡能换
+```
+
+**怎么查**：
+
+```powershell
+$cs = Get-CimInstance Win32_ComputerSystem
+"$($cs.Manufacturer) $($cs.Model)"
+# 名字里带 Nitro / Legion / ROG / 拯救者 之类 → 游戏本
+# 带 ThinkPad / Latitude / EliteBook → 商务本
+```
+
+---
+
+### ⑤ 内存多大？几条？
+
+**为什么问**：页面文件该设多大，完全取决于这个。
+
+**怎么查**：
+
+```powershell
 $os = Get-CimInstance Win32_OperatingSystem
 "物理内存: {0:N1} GB" -f ($os.TotalVisibleMemorySize/1MB)
-"可用内存: {0:N1} GB" -f ($os.FreePhysicalMemory/1MB)
 
-# 提交上限 —— 这个数字最能说明问题
-"提交上限: {0:N1} GB" -f ($os.TotalVirtualMemorySize/1MB)
-
-# 页面文件实况
-Get-CimInstance Win32_PageFileUsage | Select-Object Name, AllocatedBaseSize, PeakUsage
-
-# 页面文件配置
-(Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management' -Name PagingFiles).PagingFiles
-
-# 显卡
-nvidia-smi --query-gpu=name,memory.total,memory.used --format=csv
-
-# 磁盘
-Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object {
-  "{0} {1:N0} GB 可用 / {2:N0} GB" -f $_.DeviceID, ($_.FreeSpace/1GB), ($_.Size/1GB)
+Get-CimInstance Win32_PhysicalMemory | ForEach-Object {
+  "  $($_.DeviceLocator)  $($_.Capacity/1GB) GB  $($_.Speed) MT/s  $($_.Manufacturer)"
 }
 ```
 
-### 怎么看结果
+**分支**：
 
-**先算这笔账：**
-
-```
-提交上限 - 物理内存 = 页面文件给了我多少缓冲
-```
-
-例子：
-
-| 物理内存 | 提交上限 | 差额 | 判断 |
-|---|---|---|---|
-| 16 GB | 17.7 GB | 1.7 GB | ❌ 页面文件基本没起作用，内存一满就杀程序 |
-| 16 GB | 35.7 GB | 19.7 GB | ✅ 正常，有足够缓冲 |
-| 32 GB | 48 GB | 16 GB | ✅ 正常 |
-
-**如果差额小于物理内存的一半，直接告诉他：页面文件有问题，这是主因。**
-
-再查有没有僵尸文件：
-
-```powershell
-cmd /c "dir C:\pagefile.sys /a"
-cmd /c "dir D:\pagefile.sys /a"
-cmd /c "dir F:\pagefile.sys /a"
-```
-
-文件存在、但配置里没这一行 → 白占硬盘，一天没工作过。
+| 内存 | 页面文件建议 |
+|---|---|
+| 8 GB | 初始 = 内存大小，最大 = 2 倍（这类机器基本只能靠页面文件续命） |
+| 16 GB | 初始 16 GB，最大 32 GB |
+| 32 GB 以上 | 初始 16 GB 就够，不用太大 |
 
 ---
 
-## 阶段二：找瓶颈
+### ⑥ 有几个硬盘？哪个快？
 
-看他抱怨什么，对号入座：
+**为什么问**：**页面文件要放在快的盘上。** 这条最容易踩坑——很多人以为「哪个盘空间大放哪」，结果放到一块 58 MB/s 的垃圾 SSD 上，系统反而更卡。
 
-| 他说的 | 大概是 | 怎么确认 |
+**怎么查**：
+
+```powershell
+foreach ($dl in (Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3').DeviceID) {
+  $letter = $dl.TrimEnd(':')
+  $p = Get-Partition -DriveLetter $letter -ErrorAction SilentlyContinue
+  if ($p) {
+    $d = Get-Disk -Number $p.DiskNumber
+    $pd = Get-PhysicalDisk | Where-Object { $_.DeviceId -eq $d.Number }
+    "{0}:  Disk{1}  {2}  {3}  {4:N0} GB 可用" -f $letter, $d.Number, $d.FriendlyName, $pd.MediaType, (Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$dl'").FreeSpace/1GB
+  }
+}
+```
+
+**关键**：看**盘符对应哪块物理盘**。C 和 D 可能在同一个 Disk0 上，那它们之间挪来挪去没有意义。
+
+**必须测速**（见下面「测速」一节）。
+
+---
+
+## 测速：选页面文件位置之前一定要做
+
+这一步很多人跳过，然后踩坑。
+
+```powershell
+function Test-DiskSpeed {
+    param([string]$Drive)
+    $test = "${Drive}:\_pf_speed_test.bin"
+    try {
+        $buf = New-Object byte[] (8*1024*1024)
+        [Array]::Clear($buf, 0, $buf.Length)
+        $fs = [System.IO.File]::Create($test)
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        for ($i=0; $i -lt 64; $i++) { $fs.Write($buf, 0, $buf.Length) }   # 512 MB
+        $fs.Flush($true)
+        $sw.Stop()
+        $fs.Close()
+        $mb = (Get-Item $test).Length / 1MB
+        Remove-Item $test -Force
+        return [math]::Round($mb / $sw.Elapsed.TotalSeconds, 0)
+    } catch {
+        return -1
+    }
+}
+
+foreach ($dl in @('C','D','F')) {
+    if (Test-Path "${dl}:\") {
+        $s = Test-DiskSpeed $dl
+        "{0}: {1} MB/s" -f $dl, $s
+    }
+}
+```
+
+### 怎么读这个速度
+
+| 速度 | 判断 | 能不能放页面文件 |
 |---|---|---|
-| 开几个程序就卡死、程序自己消失 | 内存 + 页面文件 | 看提交上限差额 |
-| 硬盘灯狂闪、整个电脑一顿一顿 | 内存不够，在疯狂换页 | 看内存占用率 + 磁盘活动 |
-| 跑 AI 报 out of memory | 显存 | 看显存和模型大小 |
-| 跑 AI 很慢但没报错 | 九成没用上 GPU | 看任务管理器 GPU 占用 |
-| 玩游戏掉帧 | 显卡 / 画质设置 | 问什么游戏什么画质 |
-| 开机特别慢 | 开机自启 | 阶段三 |
+| > 800 MB/s | 正常 NVMe | ✅ 可以 |
+| 200~800 MB/s | SATA SSD 或慢速 NVMe | ⚠️ 勉强 |
+| **< 150 MB/s** | **白牌 SSD 掉速，或者机械盘** | ❌ **绝对不行** |
 
-**别急着给方案。** 先说：
+### ⚠️ 单次测速会骗人
 
-> 「我看了下，你瓶颈在内存。16 G 内存，提交上限只有 17.7 G，说明页面文件基本没起作用。这个是主因。」
+这是最容易误判的地方。**白牌 SSD 有 SLC 缓存，写进去的头几百 MB 是跑在缓存上的，速度很好看；缓存一满就掉到几十 MB/s。**
 
-等他点头再往下。
+实测案例：同一块盘
+
+```
+第一次测 512 MB   →   40 MB/s     ← 当时缓存是空的
+第二次测 1 GB     →   58 MB/s
+隔了几分钟再测    →  473 MB/s     ← 缓存被清空了
+```
+
+**三次数值差 10 倍。**
+
+所以判断一块盘能不能放页面文件，不能只看一次测速。**更可靠的信号是：**
+
+```
+① 配置写对了、重启了、页面文件还是没出现
+   → 基本可以确定这块盘持续写入有问题
+
+② 测速很好，但系统建不出 pagefile
+   → 同上，别在这块盘上纠结了，换一块
+```
+
+**页面文件需要连续写入 16 GB，比测速那 1 GB 严苛得多。**
+
+### 真实案例
+
+有台机器 F 盘是白牌 NVMe，标称 512 GB：
+
+```
+测速        473 MB/s   （看起来还行）
+创建页面文件  失败       （重启两次都没建出来）
+事件日志      零报错     （完全静默）
+```
+
+最后放弃那块盘，把页面文件放回 C 盘，一次性成功。
+
+**结论：页面文件优先放系统盘，除非你确认那块盘经得起持续写入。**
 
 ---
 
-## 阶段三：列清单
+# 第二部分：建立机器画像
 
-三个地方都要查，很多人只知道第一个：
-
-### ① 注册表自启
-
-```powershell
-Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' | Select-Object * -ExcludeProperty PS*
-Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' | Select-Object * -ExcludeProperty PS*
-```
-
-### ② 启动文件夹
-
-```powershell
-Get-ChildItem "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup"
-Get-ChildItem "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup"
-```
-
-### ③ 任务计划（最容易被漏）
-
-```powershell
-Get-ScheduledTask | Where-Object {
-  $_.State -ne 'Disabled' -and
-  ($_.Triggers | Where-Object { $_.CimClass.CimClassName -match 'Logon|Boot' })
-} | ForEach-Object {
-  $exe = ($_.Actions | Select-Object -First 1).Execute
-  "{0,-45} {1}" -f $_.TaskName, $exe
-}
-```
-
-### 怎么给他看
-
-**分三档，让他自己挑，别替他决定：**
+问完六个问题 + 测完速，先给用户一张「你这台机器的画像」，让他确认你没看错。
 
 ```
-【建议保留】
-  杀毒、声卡、显卡、安全中心、文件搜索
-
-【看你用不用】
-  终端、快捷启动、网盘、输入法、聊天工具
-
-【建议关掉】
-  游戏平台、动态壁纸、更新器、本地大模型、早就卸载了但残留的
+你这台是：Acer Nitro AN515-58 游戏本，Windows 11
+CPU      i7-12650H  10 核 16 线程
+内存     16 GB  DDR5-4800（8×2，两个槽都满了）
+显卡     RTX 4060 Laptop  8 GB 显存
+硬盘     C/D 在 Disk0（Micron 3400，1511 MB/s）
+         F 在 Disk1（白牌 512G，58 MB/s ← 这块很慢）
+页面文件 现在只有 C 盘 2 GB（提交上限 17.7 GB）
 ```
+
+**问一句：「对不对？」** 确认了再往下。
 
 ---
 
-## 阶段四：动手
+# 第三部分：分诊
 
-### 每一步必须按这个顺序
+根据画像判断主因，**只做最关键的那一件**。
+
+## 决策树
 
 ```
-1. 先备份 → 告诉他备份在哪
-2. 再改   → 一条命令只做一件事
-3. 验证   → 把改之前和改之后的值都打出来
+用户抱怨什么？
+│
+├─「开几个程序就卡死 / 程序自己消失」
+│   └─→ 看提交上限
+│       ├─ 差额 < 物理内存一半  →  页面文件问题（最高优先级）
+│       └─ 差额正常            →  内存真的不够，建议加内存条
+│
+├─「整个电脑一顿一顿，硬盘灯狂闪」
+│   └─→ 内存抖动，页面文件 + 减少后台程序
+│
+├─「跑 AI 很慢 / 报 out of memory」
+│   └─→ 先看 GPU 占用
+│       ├─ GPU 0~5%   →  没用上显卡，查驱动/Ollama 配置
+│       └─ GPU 满载    →  显存不够，换小模型
+│
+├─「玩游戏掉帧」
+│   └─→ 显存爆了，降画质
+│
+└─「开机特别慢」
+    └─→ 自启太多，清自启
 ```
 
-### 备份自启项
+## 分诊之后，只推一个方案
+
+**别一次给三个方案。** 挑最关键的，说清楚，做完再问下一项。
+
+---
+
+# 第四部分：执行时的规矩
+
+## 每一步的标准动作
+
+```
+1. 说清楚要做什么、为什么
+2. 等他同意
+3. 先备份
+4. 执行（一条命令一件事）
+5. 验证（改前改后都打出来）
+```
+
+## 备份（必做）
 
 ```powershell
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$bk = "$env:USERPROFILE\Documents\autostart-backup-$stamp"
+$bk = "$env:USERPROFILE\Documents\windoctor-backup-$stamp"
 New-Item -ItemType Directory -Path $bk -Force | Out-Null
 reg export "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" "$bk\HKCU-Run.reg" /y
 reg export "HKLM\Software\Microsoft\Windows\CurrentVersion\Run" "$bk\HKLM-Run.reg" /y
 Copy-Item "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\*" "$bk\" -Force
 ```
 
-### 删自启
+## 页面文件的坑（重点）
+
+**改配置后如果某个盘没生效，按这个顺序查：**
+
+```
+① 注册表写对了吗
+   (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management' -Name PagingFiles).PagingFiles
+
+② 自动管理关了吗
+   (Get-CimInstance Win32_ComputerSystem).AutomaticManagedPagefile   # 必须是 False
+
+③ 目标盘上有旧文件吗
+   cmd /c "dir F:\pagefile.sys /a"
+   有 → 删掉再重启（大小对不上会被静默跳过）
+
+④ 那块盘速度正常吗
+   < 150 MB/s → 别放这块，换一块
+
+⑤ ExistingPageFiles 显示有、实际没有？
+   → 系统尝试过但创建失败了，通常是因为盘太慢
+```
+
+## 服务的坑
+
+**改启动方式 ≠ 停掉现在跑的**：
 
 ```powershell
-Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name '项名' -Force
+Set-Service -Name "服务名" -StartupType Manual   # 只是下次不启动
+Stop-Service -Name "服务名" -Force               # 现在停掉，两个都要做
 ```
 
-### 服务这块，必须讲清楚三件事
-
-**第一，三种状态的区别：**
-
-```
-自动    开机就起，一直跑
-手动    开机不起，要用的时候起
-禁用    永远不起
-```
-
-**第二，改「手动」不影响软件使用**——软件要用的服务，它会自己拉起来（大多数情况）。
-
-**第三，但有个坑，必须主动说：**
-
-> **Windows 服务不会因为某个程序去连接它而自动启动。**
->
-> 比如 Navicat 连 MySQL，MySQL 服务不会自己起来，只会「连接失败」。这种要留「自动」，或者教他手动 `net start MySQL80`。
-
-**改服务的命令（需要管理员）：**
-
-```powershell
-Set-Service -Name "服务名" -StartupType Manual    # 或 Automatic / Disabled
-```
-
-**注意**：改启动方式**不会**停掉正在跑的服务，得单独停：
-
-```powershell
-Stop-Service -Name "服务名" -Force
-```
+**「手动」不会因为程序连接而自动启动**：MySQL 改成手动后，Navicat 连不上。数据库这类要留自动。
 
 ---
 
-## 阶段五：页面文件（如果有问题）
-
-### 说法要准
-
-**别说「硬盘能当内存用」**，这是错的，会让人误解好几年。
-
-准确的：
-
-> 页面文件不增加内存。它做的是：内存快满时，把暂时不用的数据挪到硬盘，腾出内存给新程序。
-> 好处是从「程序被杀掉」变成「卡一下但还在」。
-> 坏处是切回来要从硬盘读，会卡 0.5~2 秒。
-
-**如果他说「那硬盘能让我电脑变快吗」——明确说不能，只会变稳。**
-
-### 改注册表最可靠
-
-WMI 那个 `New-CimInstance Win32_PageFileSetting` 有时候会**静默失败**（创建了但不生效，不报错）。实测踩过。
-
-直接写注册表：
-
-```powershell
-# 需要管理员
-reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management" /v PagingFiles /t REG_MULTI_SZ /d "C:\pagefile.sys 4096 8192\0D:\pagefile.sys 16384 32768" /f
-```
-
-格式：`盘符:\pagefile.sys 初始MB 最大MB`，多个之间用 `\0` 分隔。
-
-### 三个要注意的
-
-**① 必须确认自动管理是关的**
-
-```powershell
-(Get-CimInstance Win32_ComputerSystem).AutomaticManagedPagefile
-# 必须是 False
-```
-
-**② 改完 `Win32_PageFileSetting` 可能不立刻反映**
-
-注册表改了但 WMI 还没更新，别被吓到。**重启后才生效**，重启后 WMI 就对了。
-
-**③ 放哪块盘有讲究**
-
-- 优先选**独立物理硬盘**（不是同一个盘的不同分区）
-- 必须是 **SSD**，机械盘放页面文件会慢到怀疑人生
-- C 盘留 4~8 GB 就够（蓝屏转储要用）
-
-查询盘符对应哪块物理盘：
-
-```powershell
-foreach ($dl in @('C','D','F')) {
-  $p = Get-Partition -DriveLetter $dl
-  $d = Get-Disk -Number $p.DiskNumber
-  "$dl : Disk$($d.Number) $($d.FriendlyName)"
-}
-```
-
----
-
-## 阶段六：验证
-
-让他重启，然后看两个数：
-
-```powershell
-$os = Get-CimInstance Win32_OperatingSystem
-"提交上限: {0:N1} GB" -f ($os.TotalVirtualMemorySize/1MB)
-"可用内存: {0:N1} GB" -f ($os.FreePhysicalMemory/1MB)
-```
-
-对照改之前的值，告诉他变化。
-
----
-
-## 🚫 绝对别碰的
+# 第五部分：绝对别碰
 
 看到这些，直接说「这个不建议动」，跳过去：
 
 ```
-杀毒软件的服务         火绒 HipsDaemon / Defender / 360
-公司发的安全客户端      零信任 VPN / SDP / 单点登录 / 数字证书
-硬件驱动               显卡 / 声卡 / 网卡 / 芯片组
-Windows 系统组件        AudioSrv / BFE / CoreMessaging / DcomLaunch
+杀毒软件服务          火绒 HipsDaemon / Defender / 360
+公司安全客户端        零信任 / SDP / 单点登录 / uSmartView
+硬件驱动              显卡 / 声卡 / 网卡 / 芯片组
+Windows 系统组件      AudioSrv / BFE / CoreMessaging / DcomLaunch
 ```
 
-### 公司电脑尤其小心
+**判断服务归属，别看名字看发布者：**
 
-那些客户端经常带**设备合规检测**：
+```powershell
+Get-ItemProperty HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* |
+  Where-Object { $_.DisplayName -match '关键词' } |
+  Select-Object DisplayName, Publisher, UninstallString
+```
 
-- 关了服务 → 可能判定「设备不合规」
-- 轻则重新认证，重则找 IT 谈话
-- 有些卸载要重新申请授权
-
-**省几十 MB 内存，换来明天上不了班，不值。**
-
----
-
-## 常见误判，别踩
-
-| 你可能会说 | 实际是 |
-|---|---|
-| 「这个服务名字像网吧软件，删了吧」 | **先看发布者**。福莱特的 `F8 iCloud Platform` 实际上是零信任 VPN，不是网吧管理 |
-| 「显存 8 G，跑 32 B 应该行」 | 32 B 要 19 GB，跑不动 |
-| 「加内存条能让 AI 变快」 | 不能。AI 吃显存，加内存只影响「溢出时死不死」 |
-| 「页面文件设大点就快了」 | 不会变快，只会不变慢/不崩 |
-| 「缓存小所以 AI 慢」 | AI 不吃缓存。慢是因为没用上 GPU，或者模型在自言自语 |
+> 有个真实教训：服务名叫 `F8iCloudServiceBeta`，看着像网吧管理软件，实际查发布者才发现是「浙江移动零信任 VPN」。差点误删。
 
 ---
 
-## 输出规范
+# 第六部分：输出风格
 
-### 别这样
+## 别这样
 
 > 「根据您的系统配置分析，建议您执行以下优化步骤：1. 禁用不必要的启动项 2. 调整虚拟内存配置 3. 关闭冗余系统服务」
 
-### 这样
+## 这样
 
-> 「看了下，你内存 16 G，但提交上限只有 17.7 G，说明页面文件基本没起作用。这个是主因。
+> 「看了下，你内存 16 G，提交上限只有 17.7 G，说明页面文件基本没起作用，这个是主因。
 >
-> 先弄页面文件，还是先查开机自启？我建议前者，影响最大。」
+> 先弄页面文件还是先查开机自启？我建议前者，影响最大。」
 
----
-
-## 收尾
-
-全部做完之后，给一张对照表：
+## 收尾给对照表
 
 ```
               改之前        改之后
-可用内存       2.09 GB      6.13 GB
-提交上限      17.7 GB      35.7 GB
+提交上限      17.7 GB      31.7 GB
 开机自启        23 项         7 项
+可用内存      2.09 GB      6.13 GB
 ```
 
-再告诉他备份在哪、怎么还原。
+**数字说话，别邀功，别总结一堆道理。**
 
-**别邀功，别总结一堆道理。数字说话就行。**
+---
+
+# 附：常见机型速查
+
+| 机型 | 内存槽 | 能否加内存 |
+|---|---|---|
+| Acer Nitro AN515-58 | 2 槽（DDR5 SO-DIMM） | ✅ 可换，需拆后盖 |
+| ThinkPad T/X 系列 | 部分板载 + 1 槽 | ⚠️ 看型号 |
+| MacBook（M 系列） | 焊死 | ❌ 不可 |
+| 大部分轻薄本 | 焊死或 1 槽 | ⚠️ 看型号 |
+| 台式机 | 看主板 | ✅ 基本都能 |
+
+**查不准的时候，让用户拆后盖看，或者装 CPU-Z 看 Memory 那一页。**
+
+---
+
+<div align="center"><sub>这份说明书会随着踩坑持续更新</sub></div>
