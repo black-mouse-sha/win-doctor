@@ -1,0 +1,13 @@
+# 备份文件
+*-backup-*/
+*.reg
+
+# 个人机器信息
+*.log
+snapshot.txt
+services.json
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
