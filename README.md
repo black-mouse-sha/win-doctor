@@ -253,7 +253,6 @@ win-doctor/
 ## 🙏 致谢
 
 - **[DeepSeek Harness](https://github.com/deepseek-ai)** —— 这次的排查就是在它上面一步步跑出来的
-- **[black-mouse-sha/deepseek-my-fish](https://github.com/black-mouse-sha/deepseek-my-fish)** —— README 的结构和语气参考了它，包括「丢给 AI 让它自己装」这个思路
 - **[mihomo](https://github.com/MetaCubeX/mihomo)** —— 排查代理问题时靠它的 named pipe API 才测出 12 个节点全不通
 - 以及所有在网上留下真实排查记录的人。这个仓库里有一半的坑，是别人先踩过我才没踩的
 
